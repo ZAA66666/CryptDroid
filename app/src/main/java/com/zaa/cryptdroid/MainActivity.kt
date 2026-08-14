@@ -53,7 +53,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.zaa.cryptdroid.model.ToolItem
 import com.zaa.cryptdroid.security.NativeCrypto
-import com.zaa.cryptdroid.ui.AppNavigation.Screen
+import com.zaa.cryptdroid.ui.Screen
 import com.zaa.cryptdroid.ui.screens.CipherScreen
 import com.zaa.cryptdroid.ui.screens.CrontabScreen
 import com.zaa.cryptdroid.ui.screens.EncodeScreen

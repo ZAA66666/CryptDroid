@@ -13,7 +13,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.zaa.cryptdroid.R
-import com.zaa.cryptdroid.ui.AppNavigation.Screen
+import com.zaa.cryptdroid.ui.Screen
 
 /**
  * 工具条目模型（Compose 版）
