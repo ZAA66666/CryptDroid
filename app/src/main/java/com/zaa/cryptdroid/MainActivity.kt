@@ -53,17 +53,23 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.zaa.cryptdroid.model.ToolItem
 import com.zaa.cryptdroid.security.NativeCrypto
+import com.zaa.cryptdroid.ui.AppNavigation.Screen
+import com.zaa.cryptdroid.ui.screens.CipherScreen
+import com.zaa.cryptdroid.ui.screens.CrontabScreen
+import com.zaa.cryptdroid.ui.screens.EncodeScreen
+import com.zaa.cryptdroid.ui.screens.GuideScreen
+import com.zaa.cryptdroid.ui.screens.HashScreen
+import com.zaa.cryptdroid.ui.screens.JsonScreen
+import com.zaa.cryptdroid.ui.screens.QrScreen
+import com.zaa.cryptdroid.ui.screens.RandomScreen
+import com.zaa.cryptdroid.ui.screens.SettingsScreen
+import com.zaa.cryptdroid.ui.screens.TextToolScreen
 import com.zaa.cryptdroid.ui.theme.CryptDroidTheme
 
 /**
- * MainActivity — 主页（Jetpack Compose）
+ * MainActivity — 应用入口 + 页面导航（Jetpack Compose）
  *
- * 职责：
- *  1. TopAppBar（标题 + 三点菜单 → 设置/关于）
- *  2. 9 个工具卡片列表（LazyColumn 实现，流畅滚动）
- *  3. native 安全层自检（仅 debug）
- *
- * 与旧版（Java + XML）差异：使用 Compose 声明式 UI，无 RecyclerView/XML 布局。
+ * 导航方式：轻量状态切换（Screen 枚举），不引入 Navigation 库，省体积。
  */
 class MainActivity : ComponentActivity() {
 
@@ -71,7 +77,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             CryptDroidTheme {
-                MainScreen()
+                AppRoot()
             }
         }
 
@@ -84,20 +90,16 @@ class MainActivity : ComponentActivity() {
     /** native 层自检：派生密钥 → 加密 → 解密 → 主密码校验，全链路跑一遍 */
     private fun selfTestNative() {
         try {
-            // 1. 派生密钥（"123456" 主密码 + 固定盐）
             val salt = ByteArray(16) { 7 }
             val key = NativeCrypto.deriveKey("123456".toByteArray(), salt, 1000, 32)
 
-            // 2. AES-GCM 加密（内部自动生成 iv，返回 iv‖密文+tag）
             val packed = NativeCrypto.aesGcmEncrypt(key, null, "自检数据".toByteArray())
 
-            // 3. 解密（应还原原文）
             val plain = NativeCrypto.aesGcmDecrypt(key, packed)
             if (plain == null || "自检数据" != plain.toString(Charsets.UTF_8)) {
                 throw IllegalStateException("decrypt 往返失败")
             }
 
-            // 4. 错误密码应校验失败、篡改数据解密应返回 null（GCM 认证拦截）
             val wrongPwd = NativeCrypto.verifyPassword("wrong".toByteArray(), salt, 1000, key)
             val tampered = packed.copyOf().also { it[it.size - 1] = (it[it.size - 1] + 1).toByte() }
             val tamperedPlain = NativeCrypto.aesGcmDecrypt(key, tampered)
@@ -113,12 +115,30 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** 主页顶层组件 */
+/** 应用根组件：管理当前页面状态 */
+@Composable
+fun AppRoot() {
+    var current by remember { mutableStateOf(Screen.HOME) }
+
+    when (current) {
+        Screen.HOME -> MainScreen(onNavigate = { current = it })
+        Screen.HASH -> HashScreen(onBack = { current = Screen.HOME })
+        Screen.ENCODE -> EncodeScreen(onBack = { current = Screen.HOME })
+        Screen.CIPHER -> CipherScreen(onBack = { current = Screen.HOME })
+        Screen.QR -> QrScreen(onBack = { current = Screen.HOME })
+        Screen.JSON -> JsonScreen(onBack = { current = Screen.HOME })
+        Screen.RANDOM -> RandomScreen(onBack = { current = Screen.HOME })
+        Screen.TEXT -> TextToolScreen(onBack = { current = Screen.HOME })
+        Screen.CRONTAB -> CrontabScreen(onBack = { current = Screen.HOME })
+        Screen.GUIDE -> GuideScreen(onBack = { current = Screen.HOME })
+        Screen.SETTINGS -> SettingsScreen(onBack = { current = Screen.HOME })
+    }
+}
+
+/** 主页：TopAppBar + 工具列表 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen() {
-    val context = LocalContext.current
-
+fun MainScreen(onNavigate: (Screen) -> Unit) {
     var menuExpanded by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -140,10 +160,7 @@ fun MainScreen() {
                         ) {
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.menu_settings)) },
-                                onClick = {
-                                    menuExpanded = false
-                                    Toast.makeText(context, R.string.placeholder_tip, Toast.LENGTH_SHORT).show()
-                                },
+                                onClick = { menuExpanded = false; onNavigate(Screen.SETTINGS) },
                                 leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) }
                             )
                         }
@@ -155,15 +172,15 @@ fun MainScreen() {
         ToolList(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
+            onToolClick = { onNavigate(it) }
         )
     }
 }
 
 /** 9 个工具卡片列表（LazyColumn 滚动） */
 @Composable
-fun ToolList(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
+fun ToolList(modifier: Modifier = Modifier, onToolClick: (Screen) -> Unit) {
     val tools = remember { ToolItem.all() }
 
     LazyColumn(
@@ -172,11 +189,7 @@ fun ToolList(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(tools, key = { it.id }) { item ->
-            ToolCard(item = item, onClick = {
-                // 骨架阶段：点击只提示，不跳转。后续替换为 Intent/Navigation 跳转。
-                val label = context.getString(item.titleRes)
-                Toast.makeText(context, "$label（${item.id}）开发中", Toast.LENGTH_SHORT).show()
-            })
+            ToolCard(item = item, onClick = { onToolClick(item.screen) })
         }
     }
 }
@@ -199,7 +212,6 @@ fun ToolCard(item: ToolItem, onClick: () -> Unit) {
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 彩色圆角图标块
             Box(
                 modifier = Modifier
                     .size(44.dp)
@@ -217,7 +229,6 @@ fun ToolCard(item: ToolItem, onClick: () -> Unit) {
 
             Spacer(Modifier.width(14.dp))
 
-            // 标题 + 描述
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = stringResource(item.titleRes),
@@ -232,7 +243,6 @@ fun ToolCard(item: ToolItem, onClick: () -> Unit) {
                 )
             }
 
-            // 右箭头
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
@@ -246,6 +256,6 @@ fun ToolCard(item: ToolItem, onClick: () -> Unit) {
 @Composable
 fun MainScreenPreview() {
     CryptDroidTheme {
-        MainScreen()
+        MainScreen(onNavigate = {})
     }
 }

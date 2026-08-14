@@ -111,6 +111,12 @@ dependencies {
     // 注意：不引入 material-icons-extended（2000+ 图标，未开 R8 时整包打入，体积爆炸）
     // 只用 material3 自带的 icons-core（Menu/Settings/Lock 等常用图标免费）
 
+    // 第三方开源库（Apache/MIT，见 THIRD_PARTY_NOTICES.md）
+    // BouncyCastle：SM2 国密 / SHA3 / Keccak / Rabbit（Java 标准库没有的算法）
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
+    // ZXing core：二维码生成与解码（二维码工具页）
+    implementation 'com.google.zxing:core:3.5.3'
+
     // 调试工具
     debugImplementation 'androidx.compose.ui:ui-tooling'
     debugImplementation 'androidx.compose.ui:ui-test-manifest'
