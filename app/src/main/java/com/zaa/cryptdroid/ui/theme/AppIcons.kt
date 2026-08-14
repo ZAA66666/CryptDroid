@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.graphics.vector.applyTo
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
@@ -102,6 +103,8 @@ object AppIcons {
             viewportHeight = 24f
         ).apply {
             path(fill = SolidColor(Color.Black)) {
+                // addPathNodes 解析 SVG path → PathNode 列表
+                // applyTo 扩展把每个节点应用到当前 PathBuilder
                 addPathNodes(pathData).forEach { node ->
                     node.applyTo(this)
                 }
