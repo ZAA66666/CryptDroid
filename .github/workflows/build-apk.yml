@@ -33,13 +33,17 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Setup Android SDK (接受 licenses；AGP 会自动下载 NDK/build-tools)
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK (编译 native 层 .so 需要；显式安装双保险)
+      - name: Setup Android SDK (runner 自带；接受 licenses + 显式安装 NDK)
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
-          sdkmanager --install "ndk;27.2.12479018" || true
-          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          SDKMANAGER=/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager
+          # 接受全部 licenses（含 NDK/CMake/build-tools）
+          yes | $SDKMANAGER --licenses > /dev/null 2>&1 || true
+          # 显式安装 NDK（编译 native 层 .so 需要）
+          $SDKMANAGER --install "ndk;27.2.12479018" > /dev/null 2>&1 || true
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
