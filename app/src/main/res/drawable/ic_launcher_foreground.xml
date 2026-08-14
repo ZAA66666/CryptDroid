@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标前景：简单的锁形 + 勾（加密工具箱意象），白色，居中 108dp 安全区内 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 锁身 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,38 a12,12 0 0 1 12,12 v6 h-24 v-6 a12,12 0 0 1 12,-12 z" />
+    <!-- 锁梁 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,26 a14,14 0 0 1 14,14 v6 h-6 v-6 a8,8 0 0 0 -16,0 v6 h-6 v-6 a14,14 0 0 1 14,-14 z" />
+    <!-- 钥匙孔 -->
+    <path
+        android:fillColor="#00a862"
+        android:pathData="M54,52 a4,4 0 0 1 4,4 v4 h-8 v-4 a4,4 0 0 1 4,-4 z" />
+</vector>

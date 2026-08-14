@@ -1,0 +1,120 @@
+// app 模块构建配置（Kotlin + Jetpack Compose）
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+android {
+    namespace 'com.zaa.cryptdroid'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.zaa.cryptdroid"
+        minSdk 26
+        targetSdk 34
+        // 版本号规则：versionCode 单调递增；versionName 形如 v{YYYYMMDD}_{HHmm}
+        versionCode 1
+        versionName "v260814_2016"
+
+        // 原生库（.so）配置：NDK 版本 + 目标 ABI
+        ndk {
+            // 兼容 32 位（armeabi-v7a）+ 64 位（arm64-v8a）
+            abiFilters 'armeabi-v7a', 'arm64-v8a'
+        }
+        // 指定 NDK 版本（AGP 构建时自动下载；与 CI workflow 的 setup-android 版本一致）
+        ndkVersion '27.2.12479018'
+    }
+
+    // 条件签名：项目目录下存在 cryptpwa-release.p12 才启用固定签名
+    // （本地构建或 CI 从 Secret 恢复后自动生效；无密钥时 debug/release 均为未签名包）
+    signingConfigs {
+        release {
+            def p12 = file('cryptpwa-release.p12')
+            if (p12.exists()) {
+                storeFile p12
+                storePassword 'cryptpwa2026'
+                keyAlias 'cryptpwa'
+                keyPassword 'cryptpwa2026'
+                storeType 'PKCS12'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // 关闭 minify，保证加密库反射可用、调试方便
+            minifyEnabled false
+        }
+        release {
+            // 保守起见 release 也关闭 R8；体积靠"纯原生 + 依赖精简 + 资源压缩"达成
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // 有签名文件才用固定签名
+            def p12 = file('cryptpwa-release.p12')
+            if (p12.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    // Kotlin + Java 17
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildFeatures {
+        buildConfig true   // 生成 BuildConfig（自检用 BuildConfig.DEBUG）
+        compose true       // 启用 Jetpack Compose
+    }
+
+    // 原生库（.so）构建：接入 CMake
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    packaging {
+        // Compose 调试工具排除多 META-INF 冲突
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+
+    lint {
+        abortOnError false  // 避免 lint 拦截导致 CI 构建失败
+    }
+}
+
+dependencies {
+    // Compose BOM（版本统一管理）
+    def composeBom = platform('androidx.compose:compose-bom:2024.10.01')
+    implementation composeBom
+
+    // AndroidX 核心
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.activity:activity-compose:1.9.3'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
+
+    // Compose UI
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-graphics'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    // 注意：不引入 material-icons-extended（2000+ 图标，未开 R8 时整包打入，体积爆炸）
+    // 只用 material3 自带的 icons-core（Menu/Settings/Lock 等常用图标免费）
+
+    // 调试工具
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+    debugImplementation 'androidx.compose.ui:ui-test-manifest'
+
+    // 测试（骨架阶段保留占位）
+    testImplementation 'junit:junit:4.13.2'
+}

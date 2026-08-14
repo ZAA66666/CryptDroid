@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 启动主题：纯 Android 原生 NoActionBar（Compose 提供 UI，XML 主题只做兜底）
+         避免依赖 XML 版 Material 库，保持依赖精简 -->
+    <style name="Theme.CryptDroid" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/accent_green</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

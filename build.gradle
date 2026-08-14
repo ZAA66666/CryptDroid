@@ -1,0 +1,6 @@
+// 根构建文件：声明插件版本（各模块引用，不在此 apply）
+plugins {
+    id 'com.android.application' version '8.13.0' apply false
+    id 'org.jetbrains.kotlin.android' version '2.0.21' apply false
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.0.21' apply false
+}

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 酷安绿主题色 -->
+    <color name="accent_green">#00a862</color>
+    <color name="accent_green_dark">#008c50</color>
+
+    <!-- 主题背景 -->
+    <color name="app_background_light">#F5F5F5</color>
+    <color name="app_background_dark">#121212</color>
+
+    <!-- 文字 -->
+    <color name="text_primary">#1A1A1A</color>
+    <color name="text_secondary">#757575</color>
+    <color name="text_on_accent">#FFFFFF</color>
+</resources>

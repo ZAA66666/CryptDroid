@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 兜底图标（非自适应版本）：API 26 以下 / 资源链接失败时的回退。
+     注意：minSdk 26 时系统优先使用 anydpi-v26 的自适应图标，
+     此文件保证 @mipmap/ic_launcher 在任意 dpi 均可解析，避免构建链接失败。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- 绿底圆角背景 -->
+    <path
+        android:fillColor="#00a862"
+        android:pathData="M6,6 h36 a6,6 0 0 1 6,6 v36 a6,6 0 0 1 -6,6 h-36 a6,6 0 0 1 -6,-6 v-36 a6,6 0 0 1 6,-6 z" />
+    <!-- 锁形 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,16 a7,7 0 0 1 7,7 v4 h-14 v-4 a7,7 0 0 1 7,-7 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,10 a9,9 0 0 1 9,9 v4 h-4 v-4 a5,5 0 0 0 -10,0 v4 h-4 v-4 a9,9 0 0 1 9,-9 z" />
+    <!-- 钥匙孔 -->
+    <path
+        android:fillColor="#00a862"
+        android:pathData="M24,28 a3,3 0 0 1 3,3 v3 h-6 v-3 a3,3 0 0 1 3,-3 z" />
+</vector>
