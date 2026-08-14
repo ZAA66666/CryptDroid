@@ -106,8 +106,8 @@ cryptpwa-native/
 
 | 层 | 内容 | 抗破解等级 |
 |---|---|---|
-| **native（.so）** | 主密码派生 PBKDF2、密码本 AES-256-GCM 加解密、主密码校验 | 高（ARM 机器码，反汇编难） |
-| **Kotlin** | 哈希/编解码/JSON 等无保密价值工具 | 中（字节码可反编译，但无敏感数据） |
+| **native（.so）** | 主密码派生 **PBKDF2-HMAC-SHA256**（纯 C 自实现）+ 主密码校验 | 高（ARM 机器码，反汇编难） |
+| **Kotlin** | AES-256-GCM 密码本加解密（javax.crypto）、哈希/编解码/JSON 等工具 | 中（字节码可反编译，但密钥不持久化） |
 | **存储** | 密码本文件 `vault_data.bin` = iv‖密文+tag；元数据 `vault_meta.bin` = 盐+迭代+指纹 | 密文态，离线不可读 |
 
 ### 4.5.2 主密码协议（VaultStore 已实现）
@@ -116,19 +116,20 @@ cryptpwa-native/
 设置主密码：salt=随机32字节 → fingerprint=PBKDF2(pwd,salt,10000,32B)
             → 存 salt+iter+fingerprint（主密码本身永不落盘）
 校验主密码：verifyPassword(pwd,salt,iter,fingerprint) → constant-time 比较
-加密数据  ：key=PBKDF2(pwd,salt,iter,32B) → AES-256-GCM(key,新iv,JSON)
+加密数据  ：key=PBKDF2(pwd,salt,iter,32B) → AES-256-GCM(key,新iv,JSON)  [Java 层]
 存储格式  ：vault_data.bin = iv(12) ‖ 密文+tag(16)
 ```
 
 ### 4.5.3 抗破解手段清单（已落地）
 
-1. **核心逻辑在 native**：`.so` 是 ARM 机器码，`-fvisibility=hidden` 隐藏符号，逆向需 IDA/Ghidra 反汇编
-2. **密钥不落 Kotlin 堆**：密钥只在 C 栈/堆中短暂存在，`secure_wipe()` 用完即清
-3. **主密码不落盘**：只存不可逆指纹，暴力破解只能靠 PBKDF2 10000 次迭代拖慢（每次尝试 ≈ 数十毫秒）
-4. **constant-time 校验**：`CRYPTO_memcmp` 防时序侧信道
-5. **GCM 认证**：密码错误/数据被篡改 → 解密直接返回 null，不泄露任何明文
-6. **系统 BoringSSL**：动态链接 `-lcrypto`（系统自带），不打包第三方加密库，零体积成本 + 算法正确性有保障
-7. **固定签名**：防重打包篡改（后续 release 配置）
+1. **主密码派生在 native**：PBKDF2 纯 C 自实现（SHA-256/HMAC/PBKDF2 均 FIPS/RFC 标准算法），`.so` 是 ARM 机器码 + `-fvisibility=hidden`，逆向需反汇编
+2. **密钥不落持久化**：派生密钥用完即清（`secure_wipe` / `fill(0)`）
+3. **主密码不落盘**：只存不可逆指纹，暴力破解靠 PBKDF2 10000 次迭代拖慢
+4. **constant-time 校验**：自实现 XOR 累积比较，防时序侧信道
+5. **GCM 认证**：密码错误/数据被篡改 → 解密抛异常返回 null，不泄露任何明文
+6. **固定签名**：防重打包篡改（后续 release 配置）
+
+> ⚠️ **技术决策记录（2026-08-14）**：NDK r26+ 已移除 BoringSSL 公共头文件（`openssl/evp.h` 在 NDK 27 sysroot 中不存在），故弃用"链接系统 libcrypto"方案，改为 native 纯 C 自实现 PBKDF2；AES-GCM 用 Android 系统 javax.crypto（算法正确性由系统保证，零体积）。这是经过 6 轮 CI 实测得出的结论。
 
 ### 4.5.4 性能与流畅度规范
 
@@ -140,9 +141,34 @@ cryptpwa-native/
 ### 4.5.5 体积控制
 
 - 双 ABI：`armeabi-v7a` + `arm64-v8a`（兼容 32 位，由彭总确认）
-- native 链接系统 BoringSSL（`libcrypto.so` 系统自带，APK 零增加）
-- 不引入 Kotlin/Compose/WebView；依赖仅 appcompat/material/constraintlayout/recyclerview
+- native 层纯 C 自实现加密算法（**零第三方库依赖**，.so 体积极小）
+- 图标仅用 material-icons-core（material3 自带，**不引 icons-extended**）
+- 依赖：Compose BOM + material3 + core-ktx + activity-compose
 - release 关闭 R8 minify（保守，防加密库反射被裁），靠 abiFilters + 资源压缩控体积
+
+### 4.5.6 第三方开源库使用策略（彭总授权，2026-08-14）
+
+> 需求原文：「这个软件可以用多一点公开的好用的 GitHub 很多 star 的公开项目，你只要在软件里面做好声明就行了」
+
+**原则**：优先采用 GitHub 上**成熟、高 star、维护活跃**的开源库，加快开发、保证正确性；**代价是必须做好 License 声明**。
+
+**选库标准**：
+1. GitHub star 高（≥1k）、Apache/MIT 宽松协议
+2. 体积小（影响 ≤6MB 目标）
+3. 纯离线可用（符合 App 定位）
+
+**已用库清单与声明位置**：
+| 库 | 用途 | License | 声明位置 |
+|---|---|---|---|
+| Jetpack Compose (AndroidX) | UI | Apache 2.0 | 待加 `THIRD_PARTY_NOTICES.md` |
+| javax.crypto（Android 系统）| AES-GCM | Android 开源 | 无需 |
+| ZXing（待引入，M5）| 二维码生成/扫描 | Apache 2.0 | 同上 |
+| BouncyCastle（待引入，M4，SM2 需要）| 国密 SM2 等 | MIT | 同上 |
+
+**必须执行的声明动作**（每次引入新库时）：
+1. 新增 `THIRD_PARTY_NOTICES.md` 记录：库名、版本、License、源码地址
+2. 设置页「关于」入口列出第三方库清单
+3. 不允许引入 GPL/AGPL 协议库（传染性，会要求整个 App 开源）
 
 ---
 
