@@ -8,11 +8,11 @@ import java.time.temporal.ChronoUnit
  * CronParser — 5 段 Crontab 表达式解析
  *
  * 格式：分 时 日 月 周
- *   *      每单位
- *   5      具体值
- *   1,3,5  多个值
- *   1-5    范围
- *   */15   步长
+ *   *       每单位
+ *   5       具体值
+ *   1,3,5   多个值
+ *   1-5     范围
+ *   星号/15  步长
  * 周：0/7 = 周日，1-6 = 周一到周六
  */
 object CronParser {

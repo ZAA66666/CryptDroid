@@ -21,6 +21,7 @@ import com.zaa.cryptdroid.ui.components.ResultBox
 import com.zaa.cryptdroid.ui.components.SectionCard
 import com.zaa.cryptdroid.ui.components.ToolScaffold
 import com.zaa.cryptdroid.util.CryptoUtil
+import com.zaa.cryptdroid.util.toHex
 
 /**
  * CipherScreen — 加/解密工具页

@@ -48,7 +48,7 @@ object HashUtil {
         val bytes = mac.doFinal(text.toByteArray(Charsets.UTF_8))
         return bytes.toHex()
     }
-
-    /** ByteArray → 小写 hex 字符串 */
-    fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 }
+
+/** ByteArray → 小写 hex 字符串（顶层扩展函数，供全项目使用） */
+fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
