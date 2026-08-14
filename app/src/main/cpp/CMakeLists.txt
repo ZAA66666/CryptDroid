@@ -7,12 +7,10 @@ project(crypto_native)
 # 生成原生库（无 STL 依赖，纯 C，控制体积）
 add_library(crypto_native SHARED crypto_native.c)
 
-# 查找系统 BoringSSL 库（Android 系统自带 libcrypto，动态链接不打包进 APK）
-# find_library 在 NDK sysroot 中定位 crypto 库，链接后运行时由系统提供
-find_library(CRYPTO_LIB crypto)
-
-# 链接：系统 BoringSSL（crypto）+ Android 平台库（android/log）
-target_link_libraries(crypto_native ${CRYPTO_LIB} android log)
+# 链接系统 BoringSSL（Android 系统自带 libcrypto，动态链接不打包进 APK）
+# 注意：不要用 find_library(CRYPTO_LIB crypto)——NDK 27 起 find_library 定位不到
+#      系统库；直接写库名 crypto，链接器会自动从 NDK sysroot 解析出 libcrypto.so。
+target_link_libraries(crypto_native crypto android log)
 
 # 优化等级：release 体积优先（-Os），符号本地化防导出
 target_compile_options(crypto_native PRIVATE -Os -fvisibility=hidden)
