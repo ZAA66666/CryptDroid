@@ -7,7 +7,6 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
-import java.util.Arrays
 
 /**
  * VaultStore — 密码本存储（本地密码信息维护，Kotlin 版）
