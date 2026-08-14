@@ -156,14 +156,10 @@ class VaultStore(context: Context) {
                     file.fill(0)
                     return null
                 }
-                // 拆分 iv(12) ‖ 密文+tag
-                val iv = file.copyOfRange(0, NativeCrypto.IV_LEN)
-                val cipher = file.copyOfRange(NativeCrypto.IV_LEN, file.size)
-                val plain = NativeCrypto.aesGcmDecrypt(key, iv, cipher)
-                iv.fill(0)
-                cipher.fill(0)
-                file.fill(0)
-                return plain
+                // NativeCrypto.aesGcmDecrypt 期望输入 = iv(12) ‖ 密文+tag
+                return NativeCrypto.aesGcmDecrypt(key, file)?.also {
+                    file.fill(0)  // 解密成功后清理密文缓冲
+                }
             } finally {
                 key.fill(0)
             }
@@ -179,20 +175,10 @@ class VaultStore(context: Context) {
 
         val key = NativeCrypto.deriveKey(masterPasswordBytes, salt!!, iterations, NativeCrypto.KEY_LEN)
         try {
-            // 每次加密必须用全新随机 iv
-            val iv = ByteArray(NativeCrypto.IV_LEN).also(random::nextBytes)
-            val cipher = NativeCrypto.aesGcmEncrypt(key, iv, plain)
-                ?: throw IOException("AES-GCM 加密失败")
-
-            // 拼接 iv ‖ 密文+tag 写盘
-            val file = ByteArray(iv.size + cipher.size)
-            System.arraycopy(iv, 0, file, 0, iv.size)
-            System.arraycopy(cipher, 0, file, iv.size, cipher.size)
+            // aesGcmEncrypt 内部自动生成新 iv，返回 iv ‖ 密文+tag 直接写盘
+            val file = NativeCrypto.aesGcmEncrypt(key, null, plain)
 
             writeFile(dataFile, file)
-
-            iv.fill(0)
-            cipher.fill(0)
             file.fill(0)
         } finally {
             key.fill(0)

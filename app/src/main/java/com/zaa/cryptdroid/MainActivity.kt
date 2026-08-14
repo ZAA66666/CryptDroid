@@ -87,25 +87,23 @@ class MainActivity : ComponentActivity() {
             // 1. 派生密钥（"123456" 主密码 + 固定盐）
             val salt = ByteArray(16) { 7 }
             val key = NativeCrypto.deriveKey("123456".toByteArray(), salt, 1000, 32)
-                ?: throw IllegalStateException("deriveKey 失败")
 
-            // 2. AES-GCM 加密
-            val iv = ByteArray(12) { 3 }
-            val cipher = NativeCrypto.aesGcmEncrypt(key, iv, "自检数据".toByteArray())
-                ?: throw IllegalStateException("encrypt 失败")
+            // 2. AES-GCM 加密（内部自动生成 iv，返回 iv‖密文+tag）
+            val packed = NativeCrypto.aesGcmEncrypt(key, null, "自检数据".toByteArray())
 
             // 3. 解密（应还原原文）
-            val plain = NativeCrypto.aesGcmDecrypt(key, iv, cipher)
+            val plain = NativeCrypto.aesGcmDecrypt(key, packed)
             if (plain == null || "自检数据" != plain.toString(Charsets.UTF_8)) {
                 throw IllegalStateException("decrypt 往返失败")
             }
 
-            // 4. 错误密码应校验失败、错误 iv 解密应返回 null（GCM 认证拦截）
+            // 4. 错误密码应校验失败、篡改数据解密应返回 null（GCM 认证拦截）
             val wrongPwd = NativeCrypto.verifyPassword("wrong".toByteArray(), salt, 1000, key)
-            val tampered = NativeCrypto.aesGcmDecrypt(key, ByteArray(12), cipher)
+            val tampered = packed.copyOf().also { it[it.size - 1] = (it[it.size - 1] + 1).toByte() }
+            val tamperedPlain = NativeCrypto.aesGcmDecrypt(key, tampered)
 
             if (wrongPwd) throw IllegalStateException("verify 误判")
-            if (tampered != null) throw IllegalStateException("GCM 认证未拦截错误 iv")
+            if (tamperedPlain != null) throw IllegalStateException("GCM 认证未拦截篡改")
 
             Log.i("NativeSelfTest", "✅ native 安全层自检通过：so 加载/派生/加解密/校验 全链路正常")
         } catch (t: Throwable) {

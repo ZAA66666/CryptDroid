@@ -1,68 +1,294 @@
 /*
- * crypto_native.c — 原生安全层（抗破解核心）
+ * crypto_native.c — 原生安全层（抗破解核心，纯 C 自实现）
  *
  * 设计目标：
  *  1. 主密码派生（PBKDF2-HMAC-SHA256）在 native 层完成，逆向者必须反汇编 .so
- *  2. 密码本 AES-256-GCM 加解密在 native 层完成，密钥不落入 Java 堆内存
- *  3. 调用系统 BoringSSL（libcrypto），动态链接，APK 体积零增加，算法正确性由 Google 保证
+ *  2. 不依赖任何系统加密库（NDK r26+ 已移除 BoringSSL 公共头文件），
+ *     SHA-256 / HMAC / PBKDF2 全部纯 C 实现，标准算法，可移植可验证
+ *  3. constant-time 比较防时序侧信道
  *
- * 链接说明：-lcrypto 是 Android 系统自带的 BoringSSL 库（API 21+ 全设备存在），
- *          因此本 .so 不打包任何第三方加密代码，保持体积最小。
+ * 算法参考标准：
+ *  - SHA-256: FIPS 180-4
+ *  - HMAC: RFC 2104
+ *  - PBKDF2: RFC 2898
+ * 已知测试向量（RFC 4231 / RFC 6070 风格）已在 Java 侧自检注释中列出。
+ *
+ * 与 Kotlin 侧的配合（NativeCrypto.kt）：
+ *  - nativeDeriveKey  -> 本文件 Java_com_zaa_cryptdroid_security_NativeCrypto_nativeDeriveKey
+ *  - nativeVerifyPassword -> ..._nativeVerifyPassword
  */
 
 #include <jni.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
-#include <openssl/evp.h>
-#include <openssl/crypto.h>
+/* ============ SHA-256（FIPS 180-4）============ */
 
-/* 常量（供 Java 侧参考） */
-#define GCM_IV_LEN     12   /* GCM 推荐 nonce 长度 */
-#define GCM_TAG_LEN    16   /* 认证标签长度 */
+static const uint32_t K256[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+    0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+    0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+    0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+    0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+    0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+    0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+    0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+    0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+};
 
-/*
- * 通用工具：JNI 字节数组 <-> C 缓冲区转换
- */
-static unsigned char* jbyteArray_to_uchar(JNIEnv* env, jbyteArray arr, jsize* outLen) {
-    if (arr == NULL) {
-        *outLen = 0;
-        return NULL;
+#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+typedef struct {
+    uint32_t state[8];
+    uint64_t total_len;   /* 已处理字节数 */
+    uint8_t  buffer[64];
+    size_t   buffer_len;
+} sha256_ctx;
+
+static void sha256_init(sha256_ctx* c) {
+    c->state[0] = 0x6a09e667u;
+    c->state[1] = 0xbb67ae85u;
+    c->state[2] = 0x3c6ef372u;
+    c->state[3] = 0xa54ff53au;
+    c->state[4] = 0x510e527fu;
+    c->state[5] = 0x9b05688cu;
+    c->state[6] = 0x1f83d9abu;
+    c->state[7] = 0x5be0cd19u;
+    c->total_len = 0;
+    c->buffer_len = 0;
+}
+
+static void sha256_compress(sha256_ctx* c, const uint8_t* block) {
+    uint32_t w[64];
+    uint32_t a, b, cc, d, e, f, g, h;
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)block[i * 4] << 24) |
+               ((uint32_t)block[i * 4 + 1] << 16) |
+               ((uint32_t)block[i * 4 + 2] << 8) |
+               ((uint32_t)block[i * 4 + 3]);
     }
-    *outLen = (*env)->GetArrayLength(env, arr);
-    unsigned char* buf = (unsigned char*)malloc(*outLen > 0 ? *outLen : 1);
-    if (buf == NULL) {
-        return NULL;
+    for (i = 16; i < 64; i++) {
+        uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
     }
-    if (*outLen > 0) {
-        (*env)->GetByteArrayRegion(env, arr, 0, *outLen, (jbyte*)buf);
+
+    a = c->state[0]; b = c->state[1]; cc = c->state[2]; d = c->state[3];
+    e = c->state[4]; f = c->state[5]; g = c->state[6]; h = c->state[7];
+
+    for (i = 0; i < 64; i++) {
+        uint32_t S1 = ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t temp1 = h + S1 + ch + K256[i] + w[i];
+        uint32_t S0 = ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22);
+        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = cc; cc = b; b = a; a = temp1 + temp2;
+    }
+
+    c->state[0] += a; c->state[1] += b; c->state[2] += cc; c->state[3] += d;
+    c->state[4] += e; c->state[5] += f; c->state[6] += g; c->state[7] += h;
+}
+
+static void sha256_update(sha256_ctx* c, const uint8_t* data, size_t len) {
+    c->total_len += len;
+
+    if (c->buffer_len > 0) {
+        size_t need = 64 - c->buffer_len;
+        if (len >= need) {
+            memcpy(c->buffer + c->buffer_len, data, need);
+            sha256_compress(c, c->buffer);
+            c->buffer_len = 0;
+            data += need;
+            len -= need;
+        } else {
+            memcpy(c->buffer + c->buffer_len, data, len);
+            c->buffer_len += len;
+            return;
+        }
+    }
+
+    while (len >= 64) {
+        sha256_compress(c, data);
+        data += 64;
+        len -= 64;
+    }
+
+    if (len > 0) {
+        memcpy(c->buffer, data, len);
+        c->buffer_len = len;
+    }
+}
+
+static void sha256_final(sha256_ctx* c, uint8_t out[32]) {
+    uint64_t bit_len = c->total_len * 8;
+    uint8_t  padding = 0x80;
+    int i;
+
+    sha256_update(c, &padding, 1);
+
+    /* 填充到 56 字节对齐 */
+    uint8_t zero = 0;
+    while (c->buffer_len != 56) {
+        sha256_update(c, &zero, 1);
+    }
+
+    /* 追加 64 位大端长度 */
+    uint8_t len_bytes[8];
+    for (i = 0; i < 8; i++) {
+        len_bytes[i] = (uint8_t)(bit_len >> (56 - i * 8));
+    }
+    sha256_update(c, len_bytes, 8);
+
+    /* 输出 */
+    for (i = 0; i < 8; i++) {
+        out[i * 4]     = (uint8_t)(c->state[i] >> 24);
+        out[i * 4 + 1] = (uint8_t)(c->state[i] >> 16);
+        out[i * 4 + 2] = (uint8_t)(c->state[i] >> 8);
+        out[i * 4 + 3] = (uint8_t)(c->state[i]);
+    }
+    memset(c, 0, sizeof(*c));
+}
+
+/* ============ HMAC-SHA256（RFC 2104）============ */
+
+static void hmac_sha256(const uint8_t* key, size_t key_len,
+                        const uint8_t* msg, size_t msg_len,
+                        uint8_t out[32]) {
+    uint8_t k_pad[64];
+    uint8_t inner[64 + 32];   /* ipad 64 + 两次哈希缓冲 */
+    uint8_t i_hash[32];
+    uint8_t block[64];
+    sha256_ctx ctx;
+    size_t i;
+
+    /* 密钥超长则先哈希 */
+    if (key_len > 64) {
+        sha256_init(&ctx);
+        sha256_update(&ctx, key, key_len);
+        sha256_final(&ctx, block);
+        memcpy(k_pad, block, 32);
+        for (i = 32; i < 64; i++) k_pad[i] = 0;
+    } else {
+        memset(k_pad, 0, 64);
+        memcpy(k_pad, key, key_len);
+    }
+
+    /* 内层：H(K^ipad || msg) */
+    sha256_init(&ctx);
+    for (i = 0; i < 64; i++) inner[i] = k_pad[i] ^ 0x36;
+    sha256_update(&ctx, inner, 64);
+    sha256_update(&ctx, msg, msg_len);
+    sha256_final(&ctx, i_hash);
+
+    /* 外层：H(K^opad || inner_hash) */
+    sha256_init(&ctx);
+    for (i = 0; i < 64; i++) inner[i] = k_pad[i] ^ 0x5c;
+    sha256_update(&ctx, inner, 64);
+    sha256_update(&ctx, i_hash, 32);
+    sha256_final(&ctx, out);
+}
+
+/* ============ PBKDF2-HMAC-SHA256（RFC 2898）============ */
+
+static int pbkdf2_hmac_sha256(const uint8_t* pass, size_t pass_len,
+                              const uint8_t* salt, size_t salt_len,
+                              uint32_t iterations, uint8_t* out, size_t out_len) {
+    uint8_t u[32];
+    uint8_t t[32];
+    uint8_t block_idx[4];
+    uint32_t i, j;
+    size_t k;
+
+    if (iterations < 1 || out_len == 0) return 0;
+
+    for (i = 1; out_len > 0; i++) {
+        /* U1 = PRF(P, S || INT_32_BE(i)) */
+        block_idx[0] = (uint8_t)(i >> 24);
+        block_idx[1] = (uint8_t)(i >> 16);
+        block_idx[2] = (uint8_t)(i >> 8);
+        block_idx[3] = (uint8_t)(i);
+
+        /* 构造盐+块号 的临时缓冲 */
+        uint8_t* salt_block = (uint8_t*)malloc(salt_len + 4);
+        if (!salt_block) return 0;
+        memcpy(salt_block, salt, salt_len);
+        memcpy(salt_block + salt_len, block_idx, 4);
+
+        hmac_sha256(pass, pass_len, salt_block, salt_len + 4, u);
+        free(salt_block);
+        memcpy(t, u, 32);
+
+        /* U2..Uc = PRF(P, U_{n-1}); T = U1 ^ U2 ^ ... ^ Uc */
+        for (j = 1; j < iterations; j++) {
+            hmac_sha256(pass, pass_len, u, 32, u);
+            for (k = 0; k < 32; k++) t[k] ^= u[k];
+        }
+
+        /* 拷贝到输出 */
+        size_t chunk = out_len < 32 ? out_len : 32;
+        memcpy(out, t, chunk);
+        out += chunk;
+        out_len -= chunk;
+    }
+    return 1;
+}
+
+/* ============ constant-time 比较 ============ */
+
+static int const_time_eq(const uint8_t* a, const uint8_t* b, size_t len) {
+    uint8_t diff = 0;
+    size_t i;
+    for (i = 0; i < len; i++) {
+        diff |= a[i] ^ b[i];
+    }
+    return diff == 0;
+}
+
+/* ============ JNI 工具 ============ */
+
+static void secure_wipe(void* ptr, size_t len) {
+    if (ptr && len > 0) {
+        volatile uint8_t* p = (volatile uint8_t*)ptr;
+        while (len--) *p++ = 0;
+    }
+}
+
+static uint8_t* jbyte_to_uchar(JNIEnv* env, jbyteArray arr, jsize* out_len) {
+    if (!arr) { *out_len = 0; return NULL; }
+    *out_len = (*env)->GetArrayLength(env, arr);
+    uint8_t* buf = (uint8_t*)malloc(*out_len > 0 ? *out_len : 1);
+    if (!buf) return NULL;
+    if (*out_len > 0) {
+        (*env)->GetByteArrayRegion(env, arr, 0, *out_len, (jbyte*)buf);
     }
     return buf;
 }
 
-static jbyteArray uchar_to_jbyteArray(JNIEnv* env, const unsigned char* buf, jsize len) {
+static jbyteArray uchar_to_jbyte(JNIEnv* env, const uint8_t* buf, jsize len) {
     jbyteArray result = (*env)->NewByteArray(env, len);
-    if (result == NULL) {
-        return NULL;
-    }
+    if (!result) return NULL;
     (*env)->SetByteArrayRegion(env, result, 0, len, (const jbyte*)buf);
     return result;
 }
 
-/* 安全清零：防止密钥残留在堆内存 */
-static void secure_wipe(void* ptr, size_t len) {
-    if (ptr != NULL && len > 0) {
-        volatile unsigned char* p = (volatile unsigned char*)ptr;
-        while (len--) {
-            *p++ = 0;
-        }
-    }
-}
+/* ============ JNI 导出 ============ */
 
 /*
  * Java_com_zaa_cryptdroid_security_NativeCrypto_nativeDeriveKey
- * 主密码派生密钥：PBKDF2-HMAC-SHA256(主密码, 盐, 迭代次数, 密钥长度)
- * 返回值：派生出的字节数组（Java 侧据此做 AES 加解密）
+ * 主密码派生：PBKDF2-HMAC-SHA256(主密码, 盐, 迭代次数, 密钥长度)
  */
 JNIEXPORT jbyteArray JNICALL
 Java_com_zaa_cryptdroid_security_NativeCrypto_nativeDeriveKey(
@@ -70,207 +296,49 @@ Java_com_zaa_cryptdroid_security_NativeCrypto_nativeDeriveKey(
         jbyteArray jPassword, jbyteArray jSalt,
         jint iterations, jint keyLen) {
 
-    jsize passLen, saltLen;
-    unsigned char* pass = jbyteArray_to_uchar(env, jPassword, &passLen);
-    unsigned char* salt = jbyteArray_to_uchar(env, jSalt, &saltLen);
+    jsize pass_len, salt_len;
+    uint8_t* pass = jbyte_to_uchar(env, jPassword, &pass_len);
+    uint8_t* salt = jbyte_to_uchar(env, jSalt, &salt_len);
 
-    if (pass == NULL || (jPassword != NULL && jSalt != NULL && salt == NULL)) {
-        if (pass) free(pass);
-        if (salt) free(salt);
-        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/OutOfMemoryError"), "jbyteArray_to_uchar failed");
+    if ((jPassword && !pass) || (jSalt && !salt)) {
+        free(pass); free(salt);
+        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/OutOfMemoryError"), "alloc failed");
         return NULL;
     }
 
-    /* 迭代次数防御：不允许极端值拖垮性能或安全 */
-    if (iterations < 1 || iterations > 100000000) {
-        iterations = 10000;
-    }
-    if (keyLen < 1 || keyLen > 1024) {
-        keyLen = 32;
-    }
+    if (iterations < 1 || iterations > 100000000) iterations = 10000;
+    if (keyLen < 1 || keyLen > 1024) keyLen = 32;
 
-    unsigned char* out = (unsigned char*)malloc(keyLen);
-    if (out == NULL) {
-        free(pass);
-        free(salt);
+    uint8_t* out = (uint8_t*)malloc(keyLen);
+    if (!out) {
+        free(pass); free(salt);
         (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/OutOfMemoryError"), "malloc failed");
         return NULL;
     }
 
-    /* BoringSSL 的 PBKDF2：pass 可以是任意字节（不要求 NUL 结尾） */
-    int ok = PKCS5_PBKDF2_HMAC(
-            (const char*)pass, passLen,
-            salt, saltLen,
-            iterations, EVP_sha256(),
-            keyLen, out);
+    int ok = pbkdf2_hmac_sha256(pass, pass_len, salt, salt_len, iterations, out, keyLen);
 
-    /* 密码/盐使用完毕立即清零 */
-    secure_wipe(pass, passLen);
-    secure_wipe(salt, saltLen);
+    secure_wipe(pass, pass_len);
+    secure_wipe(salt, salt_len);
     free(pass);
     free(salt);
 
-    if (ok != 1) {
+    if (!ok) {
         secure_wipe(out, keyLen);
         free(out);
-        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/security/GeneralSecurityException"), "PBKDF2 derive failed");
+        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/security/GeneralSecurityException"), "PBKDF2 failed");
         return NULL;
     }
 
-    jbyteArray result = uchar_to_jbyteArray(env, out, keyLen);
+    jbyteArray result = uchar_to_jbyte(env, out, keyLen);
     secure_wipe(out, keyLen);
     free(out);
     return result;
 }
 
 /*
- * Java_com_zaa_cryptdroid_security_NativeCrypto_nativeAesGcmEncrypt
- * AES-256-GCM 加密：输出 = 密文 + 16 字节认证标签
- * 入参：key(32字节) iv(12字节) plaintext
- */
-JNIEXPORT jbyteArray JNICALL
-Java_com_zaa_cryptdroid_security_NativeCrypto_nativeAesGcmEncrypt(
-        JNIEnv* env, jobject thiz,
-        jbyteArray jKey, jbyteArray jIv, jbyteArray jPlain) {
-
-    jsize keyLen, ivLen, plainLen;
-    unsigned char* key = jbyteArray_to_uchar(env, jKey, &keyLen);
-    unsigned char* iv  = jbyteArray_to_uchar(env, jIv, &ivLen);
-    unsigned char* plain = jbyteArray_to_uchar(env, jPlain, &plainLen);
-
-    /* 参数校验：密钥必须 256 位，IV 必须 12 字节 */
-    if (keyLen != 32 || ivLen != GCM_IV_LEN) {
-        free(key); free(iv); free(plain);
-        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/IllegalArgumentException"),
-                "key must be 32 bytes, iv must be 12 bytes");
-        return NULL;
-    }
-
-    /* 密文缓冲区：明文长度 + 标签长度 */
-    unsigned char* out = (unsigned char*)malloc(plainLen + GCM_TAG_LEN);
-    if (out == NULL) {
-        free(key); free(iv); free(plain);
-        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/OutOfMemoryError"), "malloc failed");
-        return NULL;
-    }
-
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (ctx == NULL) {
-        free(key); free(iv); free(plain); free(out);
-        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/OutOfMemoryError"), "EVP_CIPHER_CTX_new failed");
-        return NULL;
-    }
-
-    int ok = 1;
-    int outLen = 0, finalLen = 0;
-
-    ok &= EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
-    ok &= EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, GCM_IV_LEN, NULL);
-    ok &= EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv);
-    ok &= EVP_EncryptUpdate(ctx, out, &outLen, plain, plainLen);
-    ok &= EVP_EncryptFinal_ex(ctx, out + outLen, &finalLen);
-    outLen += finalLen;
-
-    /* 取 16 字节认证标签，追加到密文尾部 */
-    unsigned char tag[GCM_TAG_LEN];
-    ok &= EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag);
-    if (ok) {
-        memcpy(out + outLen, tag, GCM_TAG_LEN);
-        outLen += GCM_TAG_LEN;
-    }
-
-    EVP_CIPHER_CTX_free(ctx);
-    secure_wipe(key, keyLen);
-    secure_wipe(iv, ivLen);
-    free(key); free(iv); free(plain);
-
-    if (!ok) {
-        secure_wipe(out, plainLen + GCM_TAG_LEN);
-        free(out);
-        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/security/GeneralSecurityException"), "AES-GCM encrypt failed");
-        return NULL;
-    }
-
-    jbyteArray result = uchar_to_jbyteArray(env, out, outLen);
-    secure_wipe(out, outLen);
-    free(out);
-    return result;
-}
-
-/*
- * Java_com_zaa_cryptdroid_security_NativeCrypto_nativeAesGcmDecrypt
- * AES-256-GCM 解密：入参为"密文+16字节标签"拼接的字节数组
- * 认证失败返回 null（不抛异常，由 Java 层转成友好提示）
- */
-JNIEXPORT jbyteArray JNICALL
-Java_com_zaa_cryptdroid_security_NativeCrypto_nativeAesGcmDecrypt(
-        JNIEnv* env, jobject thiz,
-        jbyteArray jKey, jbyteArray jIv, jbyteArray jCipher) {
-
-    jsize keyLen, ivLen, cipherLen;
-    unsigned char* key = jbyteArray_to_uchar(env, jKey, &keyLen);
-    unsigned char* iv  = jbyteArray_to_uchar(env, jIv, &ivLen);
-    unsigned char* cipher = jbyteArray_to_uchar(env, jCipher, &cipherLen);
-
-    if (keyLen != 32 || ivLen != GCM_IV_LEN || cipherLen < GCM_TAG_LEN) {
-        free(key); free(iv); free(cipher);
-        return NULL; /* 参数不合法 → 解密失败 */
-    }
-
-    /* 拆出密文体和标签 */
-    int dataLen = cipherLen - GCM_TAG_LEN;
-    unsigned char* data = cipher;
-    unsigned char* tag  = cipher + dataLen;
-
-    unsigned char* out = (unsigned char*)malloc(dataLen > 0 ? dataLen : 1);
-    if (out == NULL) {
-        free(key); free(iv); free(cipher);
-        return NULL;
-    }
-
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (ctx == NULL) {
-        free(key); free(iv); free(cipher); free(out);
-        return NULL;
-    }
-
-    int ok = 1;
-    int outLen = 0, finalLen = 0;
-
-    ok &= EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL);
-    ok &= EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, GCM_IV_LEN, NULL);
-    ok &= EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv);
-    ok &= EVP_DecryptUpdate(ctx, out, &outLen, data, dataLen);
-    /* 设置期望标签后再 Final，认证失败 Final 返回 0 */
-    ok &= EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag);
-    ok &= EVP_DecryptFinal_ex(ctx, out + outLen, &finalLen);
-    if (ok) {
-        outLen += finalLen;
-    }
-
-    EVP_CIPHER_CTX_free(ctx);
-    secure_wipe(key, keyLen);
-    secure_wipe(iv, ivLen);
-    secure_wipe(cipher, cipherLen);
-    free(key); free(iv); free(cipher);
-
-    if (!ok) {
-        secure_wipe(out, dataLen);
-        free(out);
-        return NULL; /* 认证失败（密码错误 / 数据被篡改） */
-    }
-
-    jbyteArray result = uchar_to_jbyteArray(env, out, outLen);
-    secure_wipe(out, outLen);
-    free(out);
-    return result;
-}
-
-/*
  * Java_com_zaa_cryptdroid_security_NativeCrypto_nativeVerifyPassword
- * 主密码校验：派生密钥后与存储的密钥指纹对比（constant-time 比较，防时序侧信道）
- * 入参：主密码、盐、迭代次数、期望指纹（= deriveKey 的结果，提前存储）
- * 返回：是否匹配
+ * 主密码校验：派生后 constant-time 比较指纹
  */
 JNIEXPORT jboolean JNICALL
 Java_com_zaa_cryptdroid_security_NativeCrypto_nativeVerifyPassword(
@@ -278,41 +346,34 @@ Java_com_zaa_cryptdroid_security_NativeCrypto_nativeVerifyPassword(
         jbyteArray jPassword, jbyteArray jSalt,
         jint iterations, jbyteArray jExpected) {
 
-    jsize passLen, saltLen, expectedLen;
-    unsigned char* pass = jbyteArray_to_uchar(env, jPassword, &passLen);
-    unsigned char* salt = jbyteArray_to_uchar(env, jSalt, &saltLen);
-    unsigned char* expected = jbyteArray_to_uchar(env, jExpected, &expectedLen);
+    jsize pass_len, salt_len, expected_len;
+    uint8_t* pass = jbyte_to_uchar(env, jPassword, &pass_len);
+    uint8_t* salt = jbyte_to_uchar(env, jSalt, &salt_len);
+    uint8_t* expected = jbyte_to_uchar(env, jExpected, &expected_len);
 
-    if (iterations < 1 || iterations > 100000000) {
-        iterations = 10000;
-    }
-    /* 指纹统一为 32 字节 */
-    if (expectedLen != 32) {
+    if (iterations < 1 || iterations > 100000000) iterations = 10000;
+    if (expected_len != 32) {
         free(pass); free(salt); free(expected);
         return JNI_FALSE;
     }
 
-    unsigned char derived[32];
-    int ok = PKCS5_PBKDF2_HMAC(
-            (const char*)pass, passLen,
-            salt, saltLen,
-            iterations, EVP_sha256(),
-            32, derived);
+    uint8_t derived[32];
+    int ok = pbkdf2_hmac_sha256(pass, pass_len, salt, salt_len, iterations, derived, 32);
 
-    secure_wipe(pass, passLen);
-    secure_wipe(salt, saltLen);
-    free(pass); free(salt);
+    secure_wipe(pass, pass_len);
+    secure_wipe(salt, salt_len);
+    free(pass);
+    free(salt);
 
-    if (ok != 1) {
+    if (!ok) {
         free(expected);
         return JNI_FALSE;
     }
 
-    /* CRYPTO_memcmp：constant-time 比较，不因字节差异提前退出 */
-    jboolean match = (CRYPTO_memcmp(derived, expected, 32) == 0) ? JNI_TRUE : JNI_FALSE;
+    jboolean match = const_time_eq(derived, expected, 32) ? JNI_TRUE : JNI_FALSE;
 
     secure_wipe(derived, 32);
-    secure_wipe(expected, expectedLen);
+    secure_wipe(expected, expected_len);
     free(expected);
     return match;
 }
