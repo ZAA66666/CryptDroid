@@ -45,11 +45,6 @@ android {
         debug {
             // 关闭 minify，保证加密库反射可用、调试方便
             minifyEnabled false
-            // debug 也用固定签名 key：保证任何版本升级都无缝覆盖安装
-            def p12 = file('cryptpwa-release.p12')
-            if (p12.exists()) {
-                signingConfig signingConfigs.release
-            }
         }
         release {
             // 保守起见 release 也关闭 R8；体积靠"纯原生 + 依赖精简 + 资源压缩"达成
