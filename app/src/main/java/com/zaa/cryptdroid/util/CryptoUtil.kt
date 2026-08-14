@@ -9,7 +9,7 @@ import org.bouncycastle.crypto.params.ParametersWithRandom
 import org.bouncycastle.jce.interfaces.ECPrivateKey
 import org.bouncycastle.jce.interfaces.ECPublicKey
 import org.bouncycastle.jce.provider.BouncyCastleProvider
-import org.bouncycastle.jce.spec.ECGenParameterSpec
+import java.security.spec.ECGenParameterSpec
 import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
